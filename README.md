@@ -12,11 +12,13 @@ python3.12 -m venv .venv
 pip install -r requirements.txt huggingface_hub
 ~~~
 
-Download one task anonymously from a specific dataset commit. Export HF_DATASET as the published dataset's owner/name, and HF_REVISION as its full commit SHA.
+Download one task anonymously from the [RoboUniverse-10K dataset](https://huggingface.co/datasets/Einsia/RoboUniverse-10K). The revision below pins the 10,807 environments and the official Final 500 selection for this release.
 
 ~~~bash
 export HF_HUB_DISABLE_IMPLICIT_TOKEN=1
 unset HF_TOKEN HUGGING_FACE_HUB_TOKEN
+export HF_DATASET=Einsia/RoboUniverse-10K
+export HF_REVISION=ae170e8093dd6061765c14f2fb6a209432517d85
 export DATA=./dataset
 CASE=000095_rotate_twist
 hf download "$HF_DATASET" catalog.csv splits/heldout500.csv \
