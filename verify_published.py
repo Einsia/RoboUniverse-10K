@@ -6,7 +6,7 @@ from urllib.parse import quote
 from verify_anonymous import public_opener, verify
 
 if __name__=='__main__':
-    p=argparse.ArgumentParser(description=__doc__);p.add_argument('--repo',required=True);p.add_argument('--revision',required=True);p.add_argument('--catalog',type=Path,required=True);p.add_argument('--output',type=Path,required=True);a=p.parse_args()
+    p=argparse.ArgumentParser(description=__doc__);p.add_argument('--repo',required=True);p.add_argument('--revision',required=True);p.add_argument('--catalog',type=Path,required=True);p.add_argument('--split',action='append',default=[],help='Split CSV filename to compare under splits/; repeat for each split');p.add_argument('--output',type=Path,required=True);a=p.parse_args()
     if not re.fullmatch(r'[\w.-]+/[\w.-]+',a.repo) or not re.fullmatch('[0-9a-f]{40}',a.revision):p.error('Expected owner/name and full 40-character HF commit')
     api='https://huggingface.co/api/datasets/'+a.repo+'/revision/'+a.revision
     with public_opener().open(api,timeout=30) as r:meta=json.load(r)
@@ -14,6 +14,11 @@ if __name__=='__main__':
     base=f'https://huggingface.co/datasets/{a.repo}/resolve/{a.revision}/'
     with public_opener().open(base+'catalog.csv',timeout=30) as r:remote=r.read()
     if remote!=a.catalog.read_bytes():raise SystemExit('Published catalog differs from local release')
+    for split in a.split:
+        if not re.fullmatch(r'[a-zA-Z0-9_-]+[.]csv',split):p.error('Expected a split CSV filename')
+        with public_opener().open(base+'splits/'+split,timeout=30) as r:
+            if r.read()!=(a.catalog.parent/'splits'/split).read_bytes():
+                raise SystemExit('Published split differs from local release: '+split)
     rows=list(csv.DictReader(io.StringIO(remote.decode())))
     with ThreadPoolExecutor(8) as ex: results=list(ex.map(verify,[(base+r['archive'],r['sha256']) for r in rows]))
-    failed=sum(not x['ok'] for x in results);a.output.write_text(json.dumps(dict(repo=a.repo,revision=a.revision,checked=len(results),failed=failed,results=results),indent=2));print('checked',len(results),'failed',failed);raise SystemExit(bool(failed))
+    failed=sum(not x['ok'] for x in results);a.output.write_text(json.dumps(dict(repo=a.repo,revision=a.revision,splits=a.split,checked=len(results),failed=failed,results=results),indent=2));print('checked',len(results),'failed',failed);raise SystemExit(bool(failed))

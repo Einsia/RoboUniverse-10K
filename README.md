@@ -1,27 +1,57 @@
-# RoboUniverse evaluation
+# RoboUniverse-10K evaluation
 
 Run a coding agent or a reference controller against one physical manipulation environment or the frozen 500-task selection. A Docker Compose simulation service owns the scene and evidence. The agent gets the task instruction and an observation/action client. Harbor runs the verifier separately after collection. A successful verdict earns 1, failure or inconclusive earns 0; an infrastructure exception is not a scored attempt.
 
 Use Linux x86_64, an RTX-capable NVIDIA GPU/driver compatible with Isaac Sim 5.1, NVIDIA Container Toolkit, Docker and Compose v2+, Python 3.12, and disk space for the Isaac installation, task builds and trial logs. Allow outbound HTTPS to Python, Debian, NVIDIA, PyTorch and asset sources during setup. Evaluation requires the Isaac Sim license; review it before running.
 
-From this repository:
+From this repository, install the evaluator and Hugging Face CLI:
 
 ~~~bash
 python3.12 -m venv .venv
 . .venv/bin/activate
-pip install -r requirements.txt
-# Set DATA to a local HF dataset snapshot, not the GitHub source tree.
-# e.g. hf download "$HF_DATASET" --repo-type dataset --revision "$HF_REVISION" --local-dir ./dataset
+pip install -r requirements.txt huggingface_hub
+~~~
+
+Download one task anonymously from a specific dataset commit. Export HF_DATASET as the published dataset's owner/name, and HF_REVISION as its full commit SHA.
+
+~~~bash
+export HF_HUB_DISABLE_IMPLICIT_TOKEN=1
+unset HF_TOKEN HUGGING_FACE_HUB_TOKEN
 export DATA=./dataset
+CASE=000095_rotate_twist
+hf download "$HF_DATASET" catalog.csv splits/heldout500.csv \
+  --repo-type dataset --revision "$HF_REVISION" --local-dir "$DATA"
+archive=$(awk -F, -v id="$CASE" '$1 == id {print $3; exit}' "$DATA/catalog.csv")
+test -n "$archive" && hf download "$HF_DATASET" "$archive" \
+  --repo-type dataset --revision "$HF_REVISION" --local-dir "$DATA"
+~~~
+
+With the snapshot from the previous step:
+
+~~~bash
 python evaluate.py list --data "$DATA" --split heldout500
 docker build -t robouniverse-sim:5.1.0-v1 docker/sim-base
 docker build -t robouniverse-agent:1 docker/agent-base
-python evaluate.py run --data "$DATA" --case 000002_door_hinge_or_open_close --work ./work/oracle --agent oracle --gpu 0 --accept-isaac-eula
+python evaluate.py run --data "$DATA" --case "$CASE" --work ./work/oracle --agent oracle --gpu 0 --accept-isaac-eula
 ~~~
 
-To evaluate a model, set the provider credentials required by its Harbor adapter in your shell, then run:
+The two RoboUniverse image tags above refer to images built on your machine. The Dockerfiles download pinned public base images, including NVIDIA Isaac Sim from NGC. There is no RoboUniverse registry login or prebuilt RoboUniverse image to pull.
+
+To evaluate the 500-task selection, download its archives from the same commit. Set the provider credentials required by the Harbor adapter when evaluating a model.
 
 ~~~bash
+python - "$DATA" <<'PY' | xargs -r -n 50 sh -c 'hf download "$HF_DATASET" "$@" --repo-type dataset --revision "$HF_REVISION" --local-dir "$DATA" || exit 255' sh
+import csv
+import sys
+from pathlib import Path
+
+data = Path(sys.argv[1])
+with (data / 'catalog.csv').open() as catalog:
+    archives = {row['case']: row['archive'] for row in csv.DictReader(catalog)}
+with (data / 'splits/heldout500.csv').open() as split:
+    for row in csv.DictReader(split):
+        print(archives[row['case']])
+PY
 python evaluate.py run --data "$DATA" --split heldout500 --work ./work/agent-trial --agent "$HARBOR_AGENT" --model "$HARBOR_MODEL" --gpu 0 --accept-isaac-eula
 ~~~
 
