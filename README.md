@@ -1,5 +1,9 @@
 # RoboUniverse-10K evaluation
 
+![Task taxonomy for 10,807 RoboUniverse-10K environments, with examples across eight Franka and AgileX task families.](assets/task-taxonomy.png)
+
+*From the paper: task families and example environments across the full RoboUniverse-10K collection.*
+
 Run a coding agent or a reference controller against one physical manipulation environment or the frozen 500-task selection. A Docker Compose simulation service owns the scene and evidence. The agent gets the task instruction and an observation/action client. Harbor runs the verifier separately after collection. A successful verdict earns 1, failure or inconclusive earns 0; an infrastructure exception is not a scored attempt.
 
 ![A coding agent interacts with Isaac Sim through the Harbor harness; a separate verifier scores the final state.](assets/harbor-evaluation.png)
