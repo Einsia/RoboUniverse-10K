@@ -2,6 +2,10 @@
 
 Run a coding agent or a reference controller against one physical manipulation environment or the frozen 500-task selection. A Docker Compose simulation service owns the scene and evidence. The agent gets the task instruction and an observation/action client. Harbor runs the verifier separately after collection. A successful verdict earns 1, failure or inconclusive earns 0; an infrastructure exception is not a scored attempt.
 
+![A coding agent interacts with Isaac Sim through the Harbor harness; a separate verifier scores the final state.](assets/harbor-evaluation.png)
+
+*From the paper: a Harbor evaluation episode for the task of covering a pot with its lid.*
+
 Use Linux x86_64, an RTX-capable NVIDIA GPU/driver compatible with Isaac Sim 5.1, NVIDIA Container Toolkit, Docker and Compose v2+, Python 3.12, and disk space for the Isaac installation, task builds and trial logs. Allow outbound HTTPS to Python, Debian, NVIDIA, PyTorch and asset sources during setup. Evaluation requires the Isaac Sim license; review it before running.
 
 From this repository, install the evaluator and Hugging Face CLI:
