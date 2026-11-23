@@ -83,6 +83,32 @@ python verify_anonymous.py --data "$DATA" --output asset-readback.json
 
 The first command reports expected, scored, missing and error counts. The second downloads every unique externally resolved asset without a Hub token, browser session or asset cache. Use verify_published.py after upload to check the complete HF dataset separately. Record the dataset revision, evaluation commit, hardware, adapter version and model settings with any reported score.
 
+## Run the released model
+
+[RoboUniverse-35B-A3B](https://huggingface.co/Einsia/RoboUniverse-35B-A3B) is Qwen3.6-35B-A3B fine-tuned on successful agent trajectories from these environments. It works as the model behind Claude Code 2.1.283 with thinking off. `inference.py` applies the settings it needs: it serves the model with SGLang, checks the server, and runs Harbor with the right Claude Code options. Read the [model card](https://huggingface.co/Einsia/RoboUniverse-35B-A3B) for the full list of settings and why each one matters.
+
+The model server needs GPU memory for the 67 GB of bf16 weights plus the KV cache. That means one large GPU (we tested a B300 and a 268 GB L20D), or two 80 GB GPUs with `--tp 2` (untested). It does not need the simulator's RTX features, and it can run on a different machine from the simulator. Install SGLang 0.5.21 in its own environment, because it pins its own PyTorch:
+
+~~~bash
+python3.12 -m venv .venv-sglang
+.venv-sglang/bin/pip install "sglang==0.5.21"
+python inference.py download --dir ./RoboUniverse-35B-A3B
+python inference.py serve --python .venv-sglang/bin/python --model ./RoboUniverse-35B-A3B --gpus 0 --port 30000
+~~~
+
+`download` fetches the weights anonymously (72 GB). `serve` prints and runs the SGLang command: the bundled chat template (thinking off), no reasoning parser, the `qwen3_coder` tool-call parser, the PIL image processor, Triton MoE, bf16 KV cache and a 262,144-token context. Add `--blackwell` on B200/B300 for the faster attention backend used in our evaluation. Startup takes several minutes, longer on the first launch while kernels compile. SGLang compiles some kernels at startup. On older distributions such as RHEL 8, it may need GCC 11 or newer on `PATH` (for example a gcc-toolset), and a `libstdc++.so.6` that provides `GLIBCXX_3.4.29` (for example the one from conda) on `LD_LIBRARY_PATH`.
+
+From the evaluator environment of the previous sections, check the server, then run one case or the whole split. `--server` must be an address that Docker containers can reach, such as the model server's IP; `localhost` does not work from inside the agent container.
+
+~~~bash
+export SERVER=http://<model-server-ip>:30000
+python inference.py check --server "$SERVER"
+python inference.py run --data "$DATA" --case "$CASE" --work ./work/ru35b-$CASE --server "$SERVER" --gpu 0 --accept-isaac-eula
+python inference.py run --data "$DATA" --split heldout500 --work ./work/ru35b-final500 --server "$SERVER" --gpu 0 --accept-isaac-eula
+~~~
+
+`check` sends a text request and a tool-call request, and confirms that the server refuses thinking requests. `run` materializes each case like `evaluate.py` and then calls `harbor run -a claude-code -m anthropic/RoboUniverse-35B-A3B --ak version=2.1.283 --ak max_thinking_tokens=0`. It passes the endpoint into the agent container and adds the server to `NO_PROXY`. `--gpu` takes a GPU index or UUID for the simulator. Results use the same layout as `evaluate.py`, and a summary is printed at the end. Without `MAX_THINKING_TOKENS=0`, Claude Code asks for thinking on every request and SGLang rejects it with HTTP 400.
+
 ## Citation
 
 If you use RoboUniverse-10K in your research, please cite:
