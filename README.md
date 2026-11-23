@@ -15,73 +15,152 @@ Run a coding agent or a reference controller against one physical manipulation e
 
 *From the paper: a Harbor evaluation episode for the task of covering a pot with its lid.*
 
-Use Linux x86_64, an RTX-capable NVIDIA GPU/driver compatible with Isaac Sim 5.1, NVIDIA Container Toolkit, Docker and Compose v2+, Python 3.12, and disk space for the Isaac installation, task builds and trial logs. Allow outbound HTTPS to Python, Debian, NVIDIA, PyTorch and asset sources during setup. Evaluation requires the Isaac Sim license; review it before running.
+## Requirements
 
-From this repository, install the evaluator and Hugging Face CLI:
+- **Model server.** Follow the [SGLang deployment recipe for Qwen3.6-35B-A3B (BF16)](https://docs.sglang.io/cookbook/autoregressive/Qwen/Qwen3.6) for GPU and runtime requirements. We used one B300 per server, SGLang 0.5.21 and PyTorch 2.13.0+cu132. Use the RoboUniverse launch command below to load its fine-tuned weights and bundled chat template.
+- **Harbor host.** The tested configuration is Linux x86_64, an NVIDIA RTX PRO 5000 **72 GB Blackwell**, NVIDIA driver **580.105.08**, NVIDIA Container Toolkit 1.20.2, Docker 26.1.5 with Compose 2.40.3, Python 3.12 and Harbor 0.25.0. One simulation uses one RTX GPU. Its container memory limit varies from 18 to 44 GiB by task. Reserve additional host RAM and disk for Docker builds, assets, recordings and verifier output.
+- **Access.** Review the [NVIDIA Isaac Sim license](https://docs.isaacsim.omniverse.nvidia.com/5.1.0/common/NVIDIA_Omniverse_License_Agreement.html) before enabling the EULA flag. Setup needs HTTPS access to the public container registries, Python, npm, Debian, Hugging Face and upstream robot assets. The preinstall below uses registry.npmjs.org. Harbor’s native installer also uses downloads.claude.ai when the requested binary is absent. The simulation host and its agent containers must be able to reach the model endpoint.
+
+## How to run
+
+### 1. Serve the released model
+
+On the **model server**, use the CUDA-compatible SGLang environment from the recipe above with `sglang==0.5.21`. Install the Hugging Face CLI in that environment if needed. Download the fixed revision, then start SGLang in a terminal that will stay open.
 
 ~~~bash
-python3.12 -m venv .venv
-. .venv/bin/activate
-pip install -r requirements.txt huggingface_hub
+python -m pip install huggingface_hub
+hf download Einsia/RoboUniverse-35B-A3B \
+  --revision d787a4b4a26bb5ff868c6f14b8fd0b77288d98ba --local-dir ./RoboUniverse-35B-A3B
+
+CUDA_VISIBLE_DEVICES=0 HF_HUB_OFFLINE=1 python -m sglang.launch_server \
+  --model-path ./RoboUniverse-35B-A3B --served-model-name RoboUniverse-35B-A3B \
+  --host 127.0.0.1 --port 30000 --tp-size 1 --context-length 262144 \
+  --tool-call-parser qwen3_coder --image-processor-backend pil \
+  --moe-runner-backend triton --kv-cache-dtype bfloat16 --mem-fraction-static 0.85
 ~~~
 
-Download one task anonymously from the [RoboUniverse-10K dataset](https://huggingface.co/datasets/Einsia/RoboUniverse-10K). The revision below pins the 10,807 environments and the official Final 500 selection for this release.
+Keep the bundled chat template and generation defaults. Leave the reasoning parser and reasoning effort unset. The bundled template defaults to thinking off.
+
+### 2. Connect Harbor and build the images
+
+On the **Harbor host**, install the evaluator. The examples assume the host can reach the model at `127.0.0.1:30000`. Set `ANTHROPIC_BASE_URL` to the same model as seen from inside a Docker container. The example below forwards the model port directly from the Harbor host. If both addresses already work, skip the SSH command and use your existing endpoints.
+
+~~~bash
+git clone https://github.com/Einsia/RoboUniverse-10K.git
+cd RoboUniverse-10K
+python3.12 -m venv .venv
+. .venv/bin/activate
+python -m pip install -r requirements.txt huggingface_hub==2.4.0
+~~~
+
+If you need forwarding, open a second terminal on the Harbor host, set `MODEL_SSH_HOST` to your model server’s SSH login and keep this command running.
+
+~~~bash
+ssh -N -o ExitOnForwardFailure=yes -L 127.0.0.1:30000:127.0.0.1:30000 \
+  -L "$(docker network inspect bridge --format '{{(index .IPAM.Config 0).Gateway}}'):30010:127.0.0.1:30000" \
+  "${MODEL_SSH_HOST:?Set MODEL_SSH_HOST to the model server SSH login}"
+~~~
+
+Back in the Harbor shell, check the host endpoint and set the container endpoint.
+
+~~~bash
+BRIDGE_IP=$(docker network inspect bridge --format '{{(index .IPAM.Config 0).Gateway}}')
+export ANTHROPIC_BASE_URL="http://${BRIDGE_IP}:30010"
+
+curl --noproxy '*' -fsS http://127.0.0.1:30000/v1/messages \
+  -H 'content-type: application/json' -H 'anthropic-version: 2023-06-01' \
+  -d '{"model":"RoboUniverse-35B-A3B","max_tokens":16,"messages":[{"role":"user","content":"Reply OK"}]}'
+~~~
+
+The response should contain an assistant message from `RoboUniverse-35B-A3B`. Build both base images from the public Dockerfiles. Installing the pinned Claude Code binary during the image build avoids a network installation during each timed trial. If your network requires a proxy, pass Docker's standard build proxy arguments to all three builds.
+
+~~~bash
+docker build -t robouniverse-sim:5.1.0-v1 docker/sim-base
+docker build -t robouniverse-agent:base docker/agent-base
+docker build -t robouniverse-agent:1 - <<'DOCKER'
+FROM robouniverse-agent:base
+RUN set -eu; \
+    curl -fsSL --retry 3 -o /tmp/claude.tgz https://registry.npmjs.org/@anthropic-ai/claude-code-linux-x64/-/claude-code-linux-x64-2.1.283.tgz; \
+    echo 'd14ec0fca400151092c926928fea7e8e38231f7a90e6e1f8eeb2a55c24676afb  /tmp/claude.tgz' | sha256sum -c -; \
+    tar -xz -C /usr/local/bin --strip-components=1 -f /tmp/claude.tgz package/claude; \
+    rm /tmp/claude.tgz; \
+    claude --version | grep -Fx '2.1.283 (Claude Code)'
+DOCKER
+docker run --rm robouniverse-agent:1 curl --noproxy '*' -fsS "$ANTHROPIC_BASE_URL/v1/models"
+docker run --rm -e ANTHROPIC_BASE_URL -e ANTHROPIC_API_KEY=local-test \
+  -e CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 -e MAX_THINKING_TOKENS=0 \
+  robouniverse-agent:1 claude --bare --strict-mcp-config --tools "" \
+  --model RoboUniverse-35B-A3B --no-session-persistence -p "Reply with the single word READY."
+~~~
+
+The second check sends a message from the pinned Claude Code client to the model through the same container endpoint. With the SGLang command above, the API key is a local placeholder. The tested client printed a model-catalog warning followed by `READY`.
+
+### 3. Download and run one held-out task
+
+Keep the same Harbor shell. The catalog gives the SHA-256 and ZIP path for each of the 10,807 environments. Each invocation of `prepare` or `run` creates a fresh work directory. The evaluator verifies the ZIP and upstream assets, then generates the agent’s connection file and the simulator’s matching instance file. Compose mounts each file read-only from that task’s directory. After upgrading from an earlier evaluator, prepare or run the task again from its ZIP.
 
 ~~~bash
 export HF_HUB_DISABLE_IMPLICIT_TOKEN=1
 unset HF_TOKEN HUGGING_FACE_HUB_TOKEN
 export HF_DATASET=Einsia/RoboUniverse-10K
 export HF_REVISION=ae170e8093dd6061765c14f2fb6a209432517d85
-export DATA=./dataset
-CASE=000095_rotate_twist
-hf download "$HF_DATASET" catalog.csv splits/heldout500.csv \
-  --repo-type dataset --revision "$HF_REVISION" --local-dir "$DATA"
+export DATA="$PWD/dataset"
+download_data() {
+  hf download "$HF_DATASET" "$@" --repo-type dataset --revision "$HF_REVISION" --local-dir "$DATA"
+}
+download_data catalog.csv splits/heldout500.csv
+python evaluate.py list --data "$DATA" --split heldout500 | wc -l  # 500
+
+CASE=000247_rotate_twist
 archive=$(awk -F, -v id="$CASE" '$1 == id {print $3; exit}' "$DATA/catalog.csv")
-test -n "$archive" && hf download "$HF_DATASET" "$archive" \
-  --repo-type dataset --revision "$HF_REVISION" --local-dir "$DATA"
+test -n "$archive" && download_data "$archive"
+
+# Run the reference controller after reviewing the NVIDIA license.
+WORK=$(mktemp -d "$PWD/smoke.XXXXXX")
+python evaluate.py run --data "$DATA" --case "$CASE" --work "$WORK/oracle" \
+  --agent oracle --gpu 0 --accept-isaac-eula
+python summarize.py --jobs "$WORK/oracle/jobs" --manifest "$WORK/oracle/selection.csv"
 ~~~
 
-With the snapshot from the previous step:
+The reference-controller run should report one scored success. With evaluator commit `9d96bc4`, we also ran `000247_rotate_twist`, `001332_press_switch` and `001734_press_switch` concurrently on two RTX GPUs. In each agent container, `roboenv describe` returned its own case ID, and all three reference-controller trials scored 1.
+
+The model trial we verified used Harbor 0.25.0, the Claude Code adapter at version 2.1.283, model `anthropic/RoboUniverse-35B-A3B`, and `max_thinking_tokens=0`. On `000360_push_topple` the verifier awarded 1 after 225 physics steps. Regrading the saved evidence with the published task's `tests/grade.py` reproduced the original result.
+
+### 4. Prepare the Final 500 and score a run
+
+Download the ZIPs named by the split. The 500 ZIPs total 764 MiB. On the tested Linux filesystem, `prepare` expanded them into 39.5 GiB of task directories before Docker builds or trial logs. All 200 Franka and 300 AgileX tasks passed preparation. An independent anonymous download checked the SHA-256 of all 146 distinct upstream assets. Preparation can run without a GPU.
 
 ~~~bash
-python evaluate.py list --data "$DATA" --split heldout500
-docker build -t robouniverse-sim:5.1.0-v1 docker/sim-base
-docker build -t robouniverse-agent:1 docker/agent-base
-python evaluate.py run --data "$DATA" --case "$CASE" --work ./work/oracle --agent oracle --gpu 0 --accept-isaac-eula
-~~~
-
-The two RoboUniverse image tags above refer to images built on your machine. The Dockerfiles download pinned public base images, including NVIDIA Isaac Sim from NGC. There is no RoboUniverse registry login or prebuilt RoboUniverse image to pull.
-
-To evaluate the 500-task selection, download its archives from the same commit. Set the provider credentials required by the Harbor adapter when evaluating a model.
-
-~~~bash
-python - "$DATA" <<'PY' | xargs -r -n 50 sh -c 'hf download "$HF_DATASET" "$@" --repo-type dataset --revision "$HF_REVISION" --local-dir "$DATA" || exit 255' sh
+WORK=$(mktemp -d "$PWD/final500.XXXXXX")
+python - "$DATA" > "$WORK/archives.txt" <<'PYTHON'
 import csv
 import sys
 from pathlib import Path
 
 data = Path(sys.argv[1])
-with (data / 'catalog.csv').open() as catalog:
-    archives = {row['case']: row['archive'] for row in csv.DictReader(catalog)}
-with (data / 'splits/heldout500.csv').open() as split:
-    for row in csv.DictReader(split):
-        print(archives[row['case']])
-PY
-python evaluate.py run --data "$DATA" --split heldout500 --work ./work/agent-trial --agent "$HARBOR_AGENT" --model "$HARBOR_MODEL" --gpu 0 --accept-isaac-eula
+with (data / 'catalog.csv').open() as f:
+    archives = {row['case']: row['archive'] for row in csv.DictReader(f)}
+with (data / 'splits/heldout500.csv').open() as f:
+    cases = [row['case'] for row in csv.DictReader(f)]
+assert len(set(cases)) == len(cases) == 500
+print(*(archives[case] for case in cases), sep='\n')
+PYTHON
+xargs -r -n 50 sh -c 'hf download "$HF_DATASET" "$@" --repo-type dataset \
+  --revision "$HF_REVISION" --local-dir "$DATA" || exit 255' sh < "$WORK/archives.txt"
+python evaluate.py prepare --data "$DATA" --split heldout500 --work "$WORK/prepared"
 ~~~
 
-Each run requires a new work directory. Run one agent per task, sequentially, with no automatic retries. Keep work directories private: they contain ephemeral access tokens, logs and captures. The normal results are under work/agent-trial/jobs/CASE; a verifier result is not inferred from the CLI exit status. Use summarize.py to join trial outcomes to the intended cases and report missing and error counts separately. For storage-constrained runs, download only catalog.csv, the split and selected ZIPs. Avoid preparing the full collection on a small disk.
-
-In the grading revision, the task allows 1,800 seconds for the simulator collection hook, including a 1,770-second HTTP read timeout. Evidence export gets a budget based on completed steps, capped at 1,650 seconds. Keep the runner's collection limit at least 1,800 seconds. These limits apply after the rollout; they do not extend an agent's time or change the success conditions. Plan host RAM using each task's environment.memory_mb (simulator container limit: 18 to 44 GiB). If a live service reports an infrastructure exception, inspect the collected rollout/infra_error.json for the first recorded phase, last confirmed step when known, and exception. A killed container may leave no such file. An absent reward is an unscored trial.
-
-For a dry preparation, use the same command with prepare instead of run. No GPU or Harbor is needed to list or prepare. The generated task directory has standard instruction.md, task.toml, environment/, solution/ and tests/. The simulator builds from the pinned official NVIDIA Isaac Sim 5.1.0 container, and the agent builds from pinned public Python. The simulator download is large. On a proxied network pass Docker's standard build proxy arguments when building the two base images. Upstream robot files are checked by SHA256 and reused from the local asset cache.
+To run the reference controller directly from the downloaded ZIPs, use the `run` entry point with a fresh work directory. It runs one trial per case sequentially and invokes the separate verifier after collection. Keep the work directory private because it contains per-trial connection tokens and captures.
 
 ~~~bash
-python summarize.py --jobs work/agent-trial/jobs --manifest work/agent-trial/selection.csv
-python verify_anonymous.py --data "$DATA" --output asset-readback.json
+python evaluate.py run --data "$DATA" --split heldout500 --work "$WORK/oracle" \
+  --agent oracle --gpu 0 --accept-isaac-eula
+python summarize.py --jobs "$WORK/oracle/jobs" --manifest "$DATA/splits/heldout500.csv"
 ~~~
 
-The first command reports expected, scored, missing and error counts. The second downloads every unique externally resolved asset without a Hub token, browser session or asset cache. Use verify_published.py after upload to check the complete HF dataset separately. Record the dataset revision, evaluation commit, hardware, adapter version and model settings with any reported score.
+Report successful cases out of **500**, together with scored, missing and error counts. The summary's `success_rate_among_scored` uses only scored cases. A 20% result on the full split requires 100 distinct successful cases. A replay of selected historical successes has its own denominator. Record the evaluator commit, dataset and model revisions, hardware and inference settings with each result.
+
+Allow the simulator collection hook its declared 1,800 seconds after the agent finishes, including its 1,770-second HTTP read timeout. Evidence export can take up to 1,650 seconds. For unscored trials, inspect the trial log and the collected `rollout/infra_error.json` when present. `python verify_anonymous.py --data "$DATA" --output asset-readback.json` checks upstream asset access across a complete local snapshot.
 
 ## Citation
 
