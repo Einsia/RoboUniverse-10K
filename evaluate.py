@@ -95,7 +95,26 @@ def materialize(data, row, dest, cache):
         if base.get(name)!=version:extras.append(f'{name}=={version}')
     if extras:
         with (sim/'Dockerfile').open('a') as f:print('RUN /isaac-sim/python.sh -m pip install --no-cache-dir --upgrade --target /opt/roboenv/extra '+' '.join(sorted(extras)),file=f)
-    cfg=json.loads(compose.read_text());cfg['services']['sim']['environment']['OMNI_KIT_ACCEPT_EULA']='${OMNI_KIT_ACCEPT_EULA:?review NVIDIA EULA and set YES}';write_json(compose,cfg)
+    cfg = json.loads(compose.read_text())
+    services = cfg['services']
+    services['sim']['environment']['OMNI_KIT_ACCEPT_EULA'] = '${OMNI_KIT_ACCEPT_EULA:?review NVIDIA EULA and set YES}'
+    # Harbor uses the task's environment directory as the Compose project directory.
+    # Keep both ends of the per-episode connection outside the image build cache.
+    for service, context, source in [
+        ('main', compose.parent, './connection.json'),
+        ('sim', sim, './sim/instance.json'),
+    ]:
+        filename = Path(source).name
+        services[service].setdefault('volumes', []).append({
+            'type': 'bind',
+            'source': source,
+            'target': f'/opt/roboenv/{filename}',
+            'read_only': True,
+            'bind': {'create_host_path': False},
+        })
+        with (context / '.dockerignore').open('a') as ignore:
+            ignore.write(f'\n/{filename}\n')
+    write_json(compose, cfg)
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
