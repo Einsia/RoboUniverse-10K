@@ -1,5 +1,10 @@
 # RoboUniverse-10K evaluation
 
+<p align="center">
+  <img alt="arXiv: Coming soon" src="https://img.shields.io/badge/arXiv-Coming%20soon-b31b1b?style=flat-square">
+  <img alt="Project Page: Coming soon" src="https://img.shields.io/badge/Project%20Page-Coming%20soon-29618a?style=flat-square">
+</p>
+
 ![Task taxonomy for 10,807 RoboUniverse-10K environments, with examples across eight Franka and AgileX task families.](assets/task-taxonomy.png)
 
 *From the paper: task families and example environments across the full RoboUniverse-10K collection.*
@@ -77,3 +82,18 @@ python verify_anonymous.py --data "$DATA" --output asset-readback.json
 ~~~
 
 The first command reports expected, scored, missing and error counts. The second downloads every unique externally resolved asset without a Hub token, browser session or asset cache. Use verify_published.py after upload to check the complete HF dataset separately. Record the dataset revision, evaluation commit, hardware, adapter version and model settings with any reported score.
+
+## Citation
+
+If you use RoboUniverse-10K in your research, please cite:
+
+~~~bibtex
+@misc{liu2026robouniverse,
+  title = {RoboUniverse-10K: Toward the Scaling Era of Agentic Robotics
+           via Real-to-Sim Environments},
+  author = {Jinkun Liu and Yingze Wang and Situ Wang and Deyao Hong
+            and Mingju Gao and Wenyi Li and Yizhe Chi and Youjie Zheng
+            and Kaisen Yang and Calvin Xiao and Tiga Altman and Huan-ang Gao},
+  year = {2026}
+}
+~~~
