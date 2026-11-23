@@ -95,25 +95,32 @@ docker run --rm -e ANTHROPIC_BASE_URL -e ANTHROPIC_API_KEY=local-test \
 
 The second check sends a message from the pinned Claude Code client to the model through the same container endpoint. With the SGLang command above, the API key is a local placeholder. The tested client printed a model-catalog warning followed by `READY`.
 
-### 3. Download and run one held-out task
+### 3. Run one held-out task
 
-Keep the same Harbor shell. The catalog gives the SHA-256 and ZIP path for each of the 10,807 environments. Each invocation of `prepare` or `run` creates a fresh work directory. The evaluator verifies the ZIP and upstream assets, then generates the agent’s connection file and the simulator’s matching instance file. Compose mounts each file read-only from that task’s directory. After upgrading from an earlier evaluator, prepare or run the task again from its ZIP.
+Keep the same Harbor shell. If you already have the dataset, set `DATA` to the absolute path containing `catalog.csv`, `splits/` and `tasks/`. The commands below download missing files and check the local catalog and split against the pinned release. The catalog gives the SHA-256 and ZIP path for each of the 10,807 environments. Each invocation of `prepare` or `run` creates a fresh work directory. The evaluator verifies the ZIP and upstream assets, then generates the agent’s connection file and the simulator’s matching instance file. Compose mounts each file read-only from that task’s directory. After upgrading from an earlier evaluator, prepare or run the task again from its ZIP.
 
 ~~~bash
 export HF_HUB_DISABLE_IMPLICIT_TOKEN=1
 unset HF_TOKEN HUGGING_FACE_HUB_TOKEN
 export HF_DATASET=Einsia/RoboUniverse-10K
 export HF_REVISION=ae170e8093dd6061765c14f2fb6a209432517d85
-export DATA="$PWD/dataset"
+export DATA="${DATA:-$PWD/dataset}"
 download_data() {
   hf download "$HF_DATASET" "$@" --repo-type dataset --revision "$HF_REVISION" --local-dir "$DATA"
 }
-download_data catalog.csv splits/heldout500.csv
+for file in catalog.csv splits/heldout500.csv; do
+  if [ ! -f "$DATA/$file" ]; then download_data "$file"; fi
+done
+(cd "$DATA" && sha256sum -c - <<'SHA256'
+62ab803a5469e530e8670173829f2b6062101ae71a57a306994edc699a0bc638  catalog.csv
+e555968421293744ce214ff0a993d60dd3b4484d36517290b74198551c6cdc11  splits/heldout500.csv
+SHA256
+) || exit 1
 python evaluate.py list --data "$DATA" --split heldout500 | wc -l  # 500
 
 CASE=000247_rotate_twist
 archive=$(awk -F, -v id="$CASE" '$1 == id {print $3; exit}' "$DATA/catalog.csv")
-test -n "$archive" && download_data "$archive"
+if [ ! -f "$DATA/$archive" ]; then download_data "$archive"; fi
 
 # Run the reference controller after reviewing the NVIDIA license.
 WORK=$(mktemp -d "$PWD/smoke.XXXXXX")
@@ -143,7 +150,9 @@ with (data / 'catalog.csv').open() as f:
 with (data / 'splits/heldout500.csv').open() as f:
     cases = [row['case'] for row in csv.DictReader(f)]
 assert len(set(cases)) == len(cases) == 500
-print(*(archives[case] for case in cases), sep='\n')
+for case in cases:
+    if not (data / archives[case]).is_file():
+        print(archives[case])
 PYTHON
 xargs -r -n 50 sh -c 'hf download "$HF_DATASET" "$@" --repo-type dataset \
   --revision "$HF_REVISION" --local-dir "$DATA" || exit 255' sh < "$WORK/archives.txt"
