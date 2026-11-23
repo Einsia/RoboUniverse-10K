@@ -2,7 +2,7 @@
 
 <p align="center">
   <img alt="arXiv: Coming soon" src="https://img.shields.io/badge/arXiv-Coming%20soon-b31b1b?style=flat-square">
-  <a href="https://lab.einsia.ai/robouniverse/"><img alt="Project Page: Website" src="https://img.shields.io/badge/Project%20Page-Website-29618a?style=flat-square"></a>
+  <a href="https://lab.einsia.ai/robo-universe/"><img alt="Project Page: Website" src="https://img.shields.io/badge/Project%20Page-Website-29618a?style=flat-square"></a>
 </p>
 
 ![Task taxonomy for 10,807 RoboUniverse-10K environments, with examples across eight Franka and AgileX task families.](assets/task-taxonomy.png)
