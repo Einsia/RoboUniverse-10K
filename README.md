@@ -3,6 +3,8 @@
 <p align="center">
   <a href="https://arxiv.org/abs/2611.31002"><img alt="arXiv: 2611.31002" src="https://img.shields.io/badge/arXiv-2611.31002-b31b1b?style=flat-square"></a>
   <a href="https://lab.einsia.ai/robo-universe/"><img alt="Project Page: Website" src="https://img.shields.io/badge/Project%20Page-Website-29618a?style=flat-square"></a>
+  <a href="https://huggingface.co/Einsia/RoboUniverse-35B-A3B"><img alt="Hugging Face model card: RoboUniverse-35B-A3B" src="https://img.shields.io/badge/Hugging%20Face-Model-ffd21e?style=flat-square&amp;logo=huggingface"></a>
+  <a href="https://huggingface.co/datasets/Einsia/RoboUniverse-10K"><img alt="Hugging Face dataset card: RoboUniverse-10K" src="https://img.shields.io/badge/Hugging%20Face-Dataset-ffd21e?style=flat-square&amp;logo=huggingface"></a>
 </p>
 
 ![Task taxonomy for 10,807 RoboUniverse-10K environments, with examples across eight Franka and AgileX task families.](assets/task-taxonomy.png)
