@@ -176,7 +176,7 @@ Allow the simulator collection hook its declared 1,800 seconds after the agent f
 If you use RoboUniverse-10K in your research, please cite:
 
 ~~~bibtex
-@misc{liu2026robouniverse10kscalingeraagentic,
+@article{liu2026robouniverse10kscalingeraagentic,
       title={RoboUniverse-10K: Toward the Scaling Era of Agentic Robotics via Real-to-Sim
               Environments},
       author={Jinkun Liu and Yingze Wang and Situ Wang and Deyao Hong and Mingju Gao and Wenyi
@@ -184,6 +184,7 @@ If you use RoboUniverse-10K in your research, please cite:
               Bingxiang He and Yuxin Zuo and Boyuan Chen and Yue Chen and Cheng Qian and
               Tianxing Chen and Huichi Zhou and Huaxiu Yao and Hao Tang and Hao Zhou and
               Ya-Qin Zhang and Calvin Xiao and Tiga Altman and Huan-ang Gao},
+      journal = {arXiv preprint arXiv:2611.31002},
       year={2026},
       eprint={2611.31002},
       archivePrefix={arXiv},
