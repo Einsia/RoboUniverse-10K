@@ -18,6 +18,8 @@ from urllib.parse import quote
 from urllib.request import urlopen
 
 ROOT = Path(__file__).resolve().parent
+# Minimum CPUs for the simulator container (the task packs ask for 4). Raise with ROBOUNIVERSE_SIM_CPUS on bigger hosts.
+SIM_CPUS = float(os.environ.get("ROBOUNIVERSE_SIM_CPUS", "8"))
 
 def digest(path):
     with path.open('rb') as file:
@@ -94,10 +96,19 @@ def materialize(data, row, dest, cache):
         if not re.fullmatch(r'[a-z][a-z0-9-]*',name) or not re.fullmatch(r'[0-9][0-9a-z.+-]*',version):raise ValueError('Malformed runtime dependency')
         if base.get(name)!=version:extras.append(f'{name}=={version}')
     if extras:
-        with (sim/'Dockerfile').open('a') as f:print('RUN /isaac-sim/python.sh -m pip install --no-cache-dir --upgrade --target /opt/roboenv/extra '+' '.join(sorted(extras)),file=f)
+        # Install only the task's extra packages. The base runtime (numpy, scipy, Pillow, ...) is pinned by the task's
+        # dependencies.json and checked by the simulator sidecar at start, so pip must neither upgrade nor reinstall it:
+        # `--upgrade` here pulled numpy 2.x in with matplotlib and the sidecar then refused to start.
+        pins=' '.join(f'{name}=={version}' for name,version in sorted(base.items()) if name not in ('isaacsim','torch'))
+        with (sim/'Dockerfile').open('a') as f:
+            print("RUN printf '%s\\n' "+pins+" > /tmp/roboenv-constraints.txt && /isaac-sim/python.sh -m pip install --no-cache-dir --target /opt/roboenv/extra -c /tmp/roboenv-constraints.txt "+' '.join(sorted(extras)),file=f)
     cfg = json.loads(compose.read_text())
     services = cfg['services']
     services['sim']['environment']['OMNI_KIT_ACCEPT_EULA'] = '${OMNI_KIT_ACCEPT_EULA:?review NVIDIA EULA and set YES}'
+    # The task's own compose gives the simulator 4 CPUs. A cold Isaac Sim start (shader and scene setup) then takes
+    # more than the task's own 180-300 s readiness wait on many tasks, which fails the trial before the agent starts.
+    # Measured on one RTX PRO 5000 host: 4 CPUs never ready in 244 s, 8 CPUs ready in <=117 s, 16 CPUs in <=76 s.
+    services['sim']['cpus'] = max(float(services['sim'].get('cpus') or 0), SIM_CPUS)
     # Harbor uses the task's environment directory as the Compose project directory.
     # Keep both ends of the per-episode connection outside the image build cache.
     for service, context, source in [
