@@ -29,6 +29,17 @@ CLAUDE_CODE_VERSION = '2.1.283'  # the version whose prompt and tools are in the
 SGLANG_FLAGS = ['--context-length', '262144', '--tool-call-parser', 'qwen3_coder', '--image-processor-backend', 'pil',
                 '--moe-runner-backend', 'triton', '--kv-cache-dtype', 'bfloat16']
 BLACKWELL_FLAGS = ['--attention-backend', 'trtllm_mha', '--page-size', '64']
+# Claude Code settings of our evaluation harness: one call's output bound, the context window it assumes for the model,
+# and auto-compaction sized to that window (compaction starts at 93% of 262144 - 8192 tokens).
+CLAUDE_CODE_ENV = {
+    'CLAUDE_CODE_MAX_OUTPUT_TOKENS': '8192',
+    'CLAUDE_CODE_MAX_CONTEXT_TOKENS': '262144',
+    'CLAUDE_CODE_AUTO_COMPACT_WINDOW': '262144',
+    'CLAUDE_AUTOCOMPACT_PCT_OVERRIDE': '93',
+    'DISABLE_COMPACT': '0',
+    'DISABLE_AUTO_COMPACT': '0',
+}
+AGENT_TIMEOUT_MULTIPLIER = '2'  # our evaluation gave the agent 14,400 s; the tasks declare 7,200 s
 
 def post(base, path, body, key='dummy', timeout=300):
     request = Request(base.rstrip('/') + path, json.dumps(body).encode(), method='POST', headers={
@@ -50,7 +61,8 @@ def cmd_download(args):
 def cmd_serve(args):
     cmd = [args.python, '-m', 'sglang.launch_server', '--model-path', args.model, '--served-model-name', args.name,
            '--host', args.host, '--port', str(args.port), '--tp-size', str(args.tp),
-           '--mem-fraction-static', str(args.mem_fraction), *SGLANG_FLAGS, *(BLACKWELL_FLAGS if args.blackwell else [])]
+           '--mem-fraction-static', str(args.mem_fraction), *SGLANG_FLAGS, *(BLACKWELL_FLAGS if args.blackwell else []),
+           *(args.sglang_arg or [])]
     env = dict(os.environ)
     # SGLang compiles kernels with tools (ninja) installed next to its interpreter; works without activating the venv.
     env['PATH'] = os.pathsep.join([str(Path(args.python).absolute().parent), env.get('PATH', '')])
@@ -125,6 +137,8 @@ def cmd_run(args):
         materialize(data, row, dest, args.cache.resolve())
         cmd = ['harbor', 'run', '-p', str(dest), '-a', 'claude-code', '-m', f'anthropic/{args.name}',
                '--ak', f'version={args.claude_code_version}', '--ak', 'max_thinking_tokens=0',
+               *[a for k, v in CLAUDE_CODE_ENV.items() for a in ('--ae', f'{k}={v}')],
+               '--agent-timeout-multiplier', args.agent_timeout_multiplier,
                '-e', 'docker', '-n', '1', '--force-build', '--max-retries', '0',
                '--jobs-dir', str(work / 'jobs'), '--job-name', row['case']]
         print('+', shlex.join(cmd), flush=True)
@@ -149,6 +163,8 @@ def main():
     p.add_argument('--mem-fraction', type=float, default=0.85)
     p.add_argument('--blackwell', action='store_true', help='add the faster attention backend we used on B200/B300')
     p.add_argument('--python', default=sys.executable, help='Python interpreter with sglang installed')
+    p.add_argument('--sglang-arg', action='append', metavar='ARG',
+                   help='extra argument passed to SGLang unchanged (repeatable), e.g. --sglang-arg=--log-requests')
     p.set_defaults(func=cmd_serve)
     for name, func in [('check', cmd_check), ('run', cmd_run)]:
         p = sub.add_parser(name, help=func.__doc__)
@@ -162,6 +178,8 @@ def main():
     p.add_argument('--gpu', default='0', help='GPU index or UUID for the simulator container')
     p.add_argument('--cache', type=Path, default=Path('.cache/robot-assets'))
     p.add_argument('--claude-code-version', default=CLAUDE_CODE_VERSION)
+    p.add_argument('--agent-timeout-multiplier', default=AGENT_TIMEOUT_MULTIPLIER,
+                   help='Harbor agent timeout multiplier (2 = the 14,400 s of our evaluation)')
     p.add_argument('--accept-isaac-eula', action='store_true')
     args = parser.parse_args()
     args.func(args)
