@@ -1,7 +1,7 @@
 # RoboUniverse-10K evaluation
 
 <p align="center">
-  <img alt="arXiv: Coming soon" src="https://img.shields.io/badge/arXiv-Coming%20soon-b31b1b?style=flat-square">
+  <a href="https://arxiv.org/abs/2611.31002"><img alt="arXiv: 2611.31002" src="https://img.shields.io/badge/arXiv-2611.31002-b31b1b?style=flat-square"></a>
   <a href="https://lab.einsia.ai/robo-universe/"><img alt="Project Page: Website" src="https://img.shields.io/badge/Project%20Page-Website-29618a?style=flat-square"></a>
 </p>
 
@@ -176,12 +176,18 @@ Allow the simulator collection hook its declared 1,800 seconds after the agent f
 If you use RoboUniverse-10K in your research, please cite:
 
 ~~~bibtex
-@misc{liu2026robouniverse,
-  title = {RoboUniverse-10K: Toward the Scaling Era of Agentic Robotics
-           via Real-to-Sim Environments},
-  author = {Jinkun Liu and Yingze Wang and Situ Wang and Deyao Hong
-            and Mingju Gao and Wenyi Li and Yizhe Chi and Youjie Zheng
-            and Kaisen Yang and Calvin Xiao and Tiga Altman and Huan-ang Gao},
-  year = {2026}
+@misc{liu2026robouniverse10kscalingeraagentic,
+      title={RoboUniverse-10K: Toward the Scaling Era of Agentic Robotics via Real-to-Sim
+              Environments},
+      author={Jinkun Liu and Yingze Wang and Situ Wang and Deyao Hong and Mingju Gao and Wenyi
+              Li and Yizhe Chi and Youjie Zheng and Kaisen Yang and Xiangyang Wang and
+              Bingxiang He and Yuxin Zuo and Boyuan Chen and Yue Chen and Cheng Qian and
+              Tianxing Chen and Huichi Zhou and Huaxiu Yao and Hao Tang and Hao Zhou and
+              Ya-Qin Zhang and Calvin Xiao and Tiga Altman and Huan-ang Gao},
+      year={2026},
+      eprint={2611.31002},
+      archivePrefix={arXiv},
+      primaryClass={cs.RO},
+      url={https://arxiv.org/abs/2611.31002},
 }
 ~~~
