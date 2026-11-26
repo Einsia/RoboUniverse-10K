@@ -1,0 +1,2 @@
+#!/bin/sh
+exec /isaac-sim/python.sh "$@"

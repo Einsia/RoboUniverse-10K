@@ -1,0 +1,208 @@
+# RoboUniverse-10K evaluation
+
+<p align="center">
+  <a href="https://arxiv.org/abs/2611.31002"><img alt="arXiv: 2611.31002" src="https://img.shields.io/badge/arXiv-2611.31002-b31b1b?style=flat-square"></a>
+  <a href="https://lab.einsia.ai/robo-universe/"><img alt="Project Page: Website" src="https://img.shields.io/badge/Project%20Page-Website-29618a?style=flat-square"></a>
+  <a href="https://huggingface.co/Einsia/RoboUniverse-35B-A3B"><img alt="Hugging Face model card: RoboUniverse-35B-A3B" src="https://img.shields.io/badge/Hugging%20Face-Model-ffd21e?style=flat-square&amp;logo=huggingface"></a>
+  <a href="https://huggingface.co/datasets/Einsia/RoboUniverse-10K"><img alt="Hugging Face dataset card: RoboUniverse-10K" src="https://img.shields.io/badge/Hugging%20Face-Dataset-ffd21e?style=flat-square&amp;logo=huggingface"></a>
+</p>
+
+![Task taxonomy for 10,807 RoboUniverse-10K environments, with examples across eight Franka and AgileX task families.](assets/task-taxonomy.png)
+
+*From the paper: task families and example environments across the full RoboUniverse-10K collection.*
+
+Run a coding agent or a reference controller against one physical manipulation environment or the frozen 500-task selection. A Docker Compose simulation service owns the scene and evidence. The agent gets the task instruction and an observation/action client. Harbor runs the verifier separately after collection. A successful verdict earns 1, failure or inconclusive earns 0; an infrastructure exception is not a scored attempt.
+
+![A coding agent interacts with Isaac Sim through the Harbor harness; a separate verifier scores the final state.](assets/harbor-evaluation.png)
+
+*From the paper: a Harbor evaluation episode for the task of covering a pot with its lid.*
+
+## Requirements
+
+- **Model server.** GPU memory for the 67 GB of bf16 weights plus the KV cache: either one large GPU, or several GPUs with tensor parallelism (for example two 80 GB GPUs with `--tp 2`). The model server does not need RTX features and can be a different machine from the simulation host. We recommend SGLang 0.5.21, installed in its own environment (it pins its own PyTorch). Follow the [SGLang deployment recipe for Qwen3.6-35B-A3B](https://docs.sglang.io/cookbook/autoregressive/Qwen/Qwen3.6) for the GPU and driver requirements. Use the chat template and `generation_config.json` provided in the Hugging Face repository (see [Run the released model](#run-the-released-model)).
+- **Simulation host.** Linux x86_64 with an NVIDIA GPU that supports RTX rendering (required by Isaac Sim 5.1), plus the NVIDIA driver, NVIDIA Container Toolkit, Docker with Compose v2, Python 3.12 and Harbor 0.25.0. Each simulation uses one GPU and needs 18 to 44 GiB of GPU memory, depending on the task.
+  - Give each simulation **at least 8 CPU cores**. The task packs request 4, but a cold Isaac Sim start under 4 cores can take longer than the task's readiness wait. `evaluate.py` raises the simulator's CPU limit to 8 when it prepares a task. Set `ROBOUNIVERSE_SIM_CPUS` to use more (for example `export ROBOUNIVERSE_SIM_CPUS=16`); more cores make the simulator start faster. Plan the host's core count for the number of simulations you run at once.
+  - Leave headroom for Docker builds, assets, recordings and verifier output on top of the per-simulation memory.
+- **Network.** Setup needs HTTPS access to public container registries, PyPI, npm, Debian mirrors, Hugging Face and the upstream robot assets. Some tasks install Python packages while their simulator image is built. If your hosts reach the internet through a proxy, pass Docker's standard build proxy arguments to those builds. The simulation host and its agent containers must be able to reach the model server.
+- **License.** Review the [NVIDIA Isaac Sim license](https://docs.isaacsim.omniverse.nvidia.com/5.1.0/common/NVIDIA_Omniverse_License_Agreement.html) before you enable the EULA flag.
+
+## How to run
+
+### 1. Serve the released model
+
+On the **model server**, use the CUDA-compatible SGLang environment from the recipe above with `sglang==0.5.21`. Download the released weights, then start SGLang. Replace `<PORT>` with the port you want to use and `<TP>` with the number of GPUs. Memory-related flags such as `--mem-fraction-static` can be adjusted for your hardware; keep the other flags as they are.
+
+~~~bash
+python -m pip install huggingface_hub
+hf download Einsia/RoboUniverse-35B-A3B --local-dir ./RoboUniverse-35B-A3B
+
+HF_HUB_OFFLINE=1 python -m sglang.launch_server \
+  --model-path ./RoboUniverse-35B-A3B --served-model-name RoboUniverse-35B-A3B \
+  --host 0.0.0.0 --port <PORT> --tp-size <TP> --context-length 262144 \
+  --tool-call-parser qwen3_coder --image-processor-backend pil \
+  --moe-runner-backend triton --kv-cache-dtype bfloat16 --mem-fraction-static 0.85
+~~~
+
+Keep the bundled chat template and generation defaults. Leave the reasoning parser and reasoning effort unset. The bundled template defaults to thinking off.
+
+### 2. Connect Harbor and build the images
+
+On the **Harbor host**, install the evaluator.
+
+~~~bash
+git clone https://github.com/Einsia/RoboUniverse-10K.git
+cd RoboUniverse-10K
+python3.12 -m venv .venv
+. .venv/bin/activate
+python -m pip install -r requirements.txt huggingface_hub==2.4.0
+~~~
+
+Set `ANTHROPIC_BASE_URL` to the address at which the model server is reachable from inside a Docker container, such as the model server's IP and port. Inside the agent container, `localhost` and `127.0.0.1` refer to the container itself, not the host.
+
+~~~bash
+export ANTHROPIC_BASE_URL='http://<model-server-ip>:<PORT>'  # replace with your model endpoint
+~~~
+
+Build both base images from the public Dockerfiles. Installing the pinned Claude Code binary during the image build avoids a network installation during each timed trial. If your network requires a proxy, pass Docker's standard build proxy arguments to all three builds.
+
+~~~bash
+docker build -t robouniverse-sim:5.1.0-v1 docker/sim-base
+docker build -t robouniverse-agent:base docker/agent-base
+docker build -t robouniverse-agent:1 - <<'DOCKER'
+FROM robouniverse-agent:base
+RUN set -eu; \
+    curl -fsSL --retry 3 -o /tmp/claude.tgz https://registry.npmjs.org/@anthropic-ai/claude-code-linux-x64/-/claude-code-linux-x64-2.1.283.tgz; \
+    echo 'd14ec0fca400151092c926928fea7e8e38231f7a90e6e1f8eeb2a55c24676afb  /tmp/claude.tgz' | sha256sum -c -; \
+    tar -xz -C /usr/local/bin --strip-components=1 -f /tmp/claude.tgz package/claude; \
+    rm /tmp/claude.tgz; \
+    claude --version | grep -Fx '2.1.283 (Claude Code)'
+DOCKER
+docker run --rm robouniverse-agent:1 curl --noproxy '*' -fsS "$ANTHROPIC_BASE_URL/v1/models"
+docker run --rm -e ANTHROPIC_BASE_URL -e ANTHROPIC_API_KEY=local-test \
+  -e CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 -e MAX_THINKING_TOKENS=0 \
+  robouniverse-agent:1 claude --bare --strict-mcp-config --tools "" \
+  --model RoboUniverse-35B-A3B --no-session-persistence -p "Reply with the single word READY."
+~~~
+
+The first check confirms that the model endpoint is reachable from inside a container. The second sends a message from the pinned Claude Code client to the model through the same container endpoint and should print `READY`. SGLang started as above does not check the API key, so `local-test` is only a placeholder; if your endpoint requires authentication, use your real key.
+
+### 3. Run one held-out task
+
+Keep the same Harbor shell. If you already have the dataset, set `DATA` to the absolute path containing `catalog.csv`, `splits/` and `tasks/`. The commands below download missing files and check the local catalog and split checksums. The catalog gives the SHA-256 and ZIP path for each of the 10,807 environments. Each invocation of `prepare` or `run` creates a fresh work directory. The evaluator verifies the ZIP and upstream assets, then generates the agent’s connection file and the simulator’s matching instance file. Compose mounts each file read-only from that task’s directory. After upgrading from an earlier evaluator, prepare or run the task again from its ZIP. `--gpu` selects the simulator's GPU (index or UUID).
+
+~~~bash
+export HF_HUB_DISABLE_IMPLICIT_TOKEN=1
+unset HF_TOKEN HUGGING_FACE_HUB_TOKEN
+export HF_DATASET=Einsia/RoboUniverse-10K
+export DATA="${DATA:-$PWD/dataset}"
+download_data() {
+  hf download "$HF_DATASET" "$@" --repo-type dataset --local-dir "$DATA"
+}
+for file in catalog.csv splits/heldout500.csv; do
+  if [ ! -f "$DATA/$file" ]; then download_data "$file"; fi
+done
+(cd "$DATA" && sha256sum -c - <<'SHA256'
+599e58415a2782aba41eaba54f0bc0a6ad56500bcd7d9c60919729713cc4bc60  catalog.csv
+cc717f17c017822e83f7656ded3002071d4f1a112d0ec92e5115ceccb57534a5  splits/heldout500.csv
+SHA256
+) || exit 1
+python evaluate.py list --data "$DATA" --split heldout500 | wc -l  # 500
+
+CASE=000247_rotate_twist
+archive=$(awk -F, -v id="$CASE" '$1 == id {print $3; exit}' "$DATA/catalog.csv")
+if [ ! -f "$DATA/$archive" ]; then download_data "$archive"; fi
+
+# Run the reference controller after reviewing the NVIDIA license.
+WORK=$(mktemp -d "$PWD/smoke.XXXXXX")
+python evaluate.py run --data "$DATA" --case "$CASE" --work "$WORK/oracle" \
+  --agent oracle --gpu 0 --accept-isaac-eula
+python summarize.py --jobs "$WORK/oracle/jobs" --manifest "$WORK/oracle/selection.csv"
+~~~
+
+The reference-controller run should report one scored success.
+
+To run the released model, see [Run the released model](#run-the-released-model). Our evaluation used Harbor 0.25.0, the Claude Code adapter at version 2.1.283, model `anthropic/RoboUniverse-35B-A3B`, and `max_thinking_tokens=0`.
+
+### 4. Prepare the Final 500 and score a run
+
+Download the ZIPs named by the split. Preparation can run without a GPU.
+
+~~~bash
+WORK=$(mktemp -d "$PWD/final500.XXXXXX")
+python - "$DATA" > "$WORK/archives.txt" <<'PYTHON'
+import csv
+import sys
+from pathlib import Path
+
+data = Path(sys.argv[1])
+with (data / 'catalog.csv').open() as f:
+    archives = {row['case']: row['archive'] for row in csv.DictReader(f)}
+with (data / 'splits/heldout500.csv').open() as f:
+    cases = [row['case'] for row in csv.DictReader(f)]
+assert len(set(cases)) == len(cases) == 500
+for case in cases:
+    if not (data / archives[case]).is_file():
+        print(archives[case])
+PYTHON
+xargs -r -n 50 sh -c 'hf download "$HF_DATASET" "$@" --repo-type dataset \
+  --local-dir "$DATA" || exit 255' sh < "$WORK/archives.txt"
+python evaluate.py prepare --data "$DATA" --split heldout500 --work "$WORK/prepared"
+~~~
+
+To run the reference controller directly from the downloaded ZIPs, use the `run` entry point with a fresh work directory. It runs one trial per case sequentially and invokes the separate verifier after collection. Keep the work directory private because it contains per-trial connection tokens and captures.
+
+~~~bash
+python evaluate.py run --data "$DATA" --split heldout500 --work "$WORK/oracle" \
+  --agent oracle --gpu 0 --accept-isaac-eula
+python summarize.py --jobs "$WORK/oracle/jobs" --manifest "$DATA/splits/heldout500.csv"
+~~~
+
+Report successful cases out of **500**, together with scored, missing and error counts. The summary's `success_rate_among_scored` uses only scored cases. Record the evaluator commit, dataset and model revisions, hardware and inference settings with each result.
+
+## Run the released model
+
+[RoboUniverse-35B-A3B](https://huggingface.co/Einsia/RoboUniverse-35B-A3B) is Qwen3.6-35B-A3B fine-tuned on successful agent trajectories from these environments. It works as the model behind Claude Code 2.1.283 with thinking off. `inference.py` applies the settings it needs: it serves the model with SGLang, checks the server, and runs Harbor with the right Claude Code options. Read the [model card](https://huggingface.co/Einsia/RoboUniverse-35B-A3B) for the full list of settings and why each one matters.
+
+The model server needs GPU memory for the 67 GB of bf16 weights plus the KV cache. That means one large GPU (we tested a B300 and a 268 GB L20D), or two 80 GB GPUs with `--tp 2` (untested). It does not need the simulator's RTX features, and it can run on a different machine from the simulator. Install SGLang 0.5.21 in its own environment, because it pins its own PyTorch:
+
+~~~bash
+python3.12 -m venv .venv-sglang
+.venv-sglang/bin/pip install "sglang==0.5.21"
+python inference.py download --dir ./RoboUniverse-35B-A3B
+python inference.py serve --python .venv-sglang/bin/python --model ./RoboUniverse-35B-A3B --gpus 0 --port 30000
+~~~
+
+`download` fetches the weights anonymously (72 GB). `serve` prints and runs the SGLang command: the bundled chat template (thinking off), no reasoning parser, the `qwen3_coder` tool-call parser, the PIL image processor, Triton MoE, bf16 KV cache and a 262,144-token context. Add `--blackwell` on B200/B300 for the faster attention backend used in our evaluation. Startup takes several minutes, longer on the first launch while kernels compile. SGLang compiles some kernels at startup. On older distributions such as RHEL 8, it may need GCC 11 or newer on `PATH` (for example a gcc-toolset), and a `libstdc++.so.6` that provides `GLIBCXX_3.4.29` (for example the one from conda) on `LD_LIBRARY_PATH`.
+
+From the evaluator environment of the previous sections, check the server, then run one case or the whole split. `--server` must be an address that Docker containers can reach, such as the model server's IP; `localhost` does not work from inside the agent container.
+
+~~~bash
+export SERVER=http://<model-server-ip>:30000
+python inference.py check --server "$SERVER"
+python inference.py run --data "$DATA" --case "$CASE" --work ./work/ru35b-$CASE --server "$SERVER" --gpu 0 --accept-isaac-eula
+python inference.py run --data "$DATA" --split heldout500 --work ./work/ru35b-final500 --server "$SERVER" --gpu 0 --accept-isaac-eula
+~~~
+
+`check` sends a text request and a tool-call request, and confirms that the server refuses thinking requests. `run` materializes each case like `evaluate.py` and then calls `harbor run -a claude-code -m anthropic/RoboUniverse-35B-A3B` with the settings of our evaluation: Claude Code 2.1.283 (`--ak version=2.1.283`), thinking off (`--ak max_thinking_tokens=0`), an 8,192-token output bound per call, a 262,144-token context window with auto-compaction at 93% (six `--ae` variables), and 14,400 s per task (`--agent-timeout-multiplier 2`). It passes the endpoint into the agent container and adds the server to `NO_PROXY`. `--gpu` takes a GPU index or UUID for the simulator. Results use the same layout as `evaluate.py`, and a summary is printed at the end. Use `inference.py run` rather than `evaluate.py run --agent claude-code` for this model, because `evaluate.py` cannot pass these settings. The model's chat template and `generation_config.json` (temperature 1.0, top-p 1.0, no top-k) supply the rest of the evaluation setup; do not override them.
+
+## Citation
+
+If you use RoboUniverse-10K in your research, please cite:
+
+~~~bibtex
+@article{liu2026robouniverse10kscalingeraagentic,
+      title={RoboUniverse-10K: Toward the Scaling Era of Agentic Robotics via Real-to-Sim
+              Environments},
+      author={Jinkun Liu and Yingze Wang and Situ Wang and Deyao Hong and Mingju Gao and Wenyi
+              Li and Yizhe Chi and Youjie Zheng and Kaisen Yang and Xiangyang Wang and
+              Bingxiang He and Yuxin Zuo and Boyuan Chen and Yue Chen and Cheng Qian and
+              Tianxing Chen and Huichi Zhou and Huaxiu Yao and Hao Tang and Hao Zhou and
+              Ya-Qin Zhang and Calvin Xiao and Tiga Altman and Huan-ang Gao},
+      journal = {arXiv preprint arXiv:2611.31002},
+      year={2026},
+      eprint={2611.31002},
+      archivePrefix={arXiv},
+      primaryClass={cs.RO},
+      url={https://arxiv.org/abs/2611.31002},
+}
+~~~
